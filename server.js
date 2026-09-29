@@ -376,6 +376,10 @@ function safeEqual(a, b) {
 
 // ---- Network Safety ----
 async function validateTargetNetwork(hostname) {
+    if (hostname.toLowerCase().endsWith('.onion')) {
+        if (!torConfig.enabled) throw new Error('Onion targets require Tor to be enabled in tor.json.');
+        return;
+    }
     if (isBlockedHost(hostname)) throw new Error('Target host is blocked by SSRF guard.');
     if (net.isIP(hostname)) return;
 
