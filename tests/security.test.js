@@ -46,6 +46,10 @@ test('local server serves the UI and blocks direct private targets', async () =>
       });
     });
 
+    const health = await fetch('http://127.0.0.1:' + port + '/healthz');
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).status, 'ok');
+
     const ui = await fetch('http://127.0.0.1:' + port + '/');
     assert.equal(ui.status, 200);
     assert.match(await ui.text(), /Rook Crawler/i);
