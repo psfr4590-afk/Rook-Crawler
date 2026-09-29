@@ -522,6 +522,16 @@ fs.watchFile(INTELLIGENCE_FILE, () => {
     }
 });
 
+app.get('/healthz', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'rook-crawler',
+        version: '2.1.0',
+        bind: HOST,
+        port: PORT
+    });
+});
+
 // ---- Main Handler ----
 app.use(async (req, res) => {
     const target = resolveTarget(req);
