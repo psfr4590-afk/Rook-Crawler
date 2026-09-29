@@ -4,11 +4,20 @@ const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
 const https = require('https');
+const dns = require('dns').promises;
 const { URL } = require('url');
 const cuimp = require('cuimp');
 
 const app = express();
-const PORT = process.env.PORT || 8010;
+const PORT = Number.parseInt(process.env.PORT || '8010', 10);
+const HOST = process.env.HOST || '127.0.0.1';
+const MAX_RESPONSE_BYTES = Number.parseInt(process.env.MAX_RESPONSE_BYTES || String(10 * 1024 * 1024), 10);
+const MAX_REDIRECTS = Number.parseInt(process.env.MAX_REDIRECTS || '5', 10);
+const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.REQUEST_TIMEOUT_MS || '15000', 10);
+const CORS_ALLOW_ORIGINS = new Set(
+    (process.env.CORS_ALLOW_ORIGINS || `http://127.0.0.1:${PORT},http://localhost:${PORT}`)
+        .split(',').map(v => v.trim()).filter(Boolean)
+);
 const INDEX_FILE = path.join(__dirname, 'index.html');
 const PROXIES_FILE = path.join(__dirname, 'proxies.txt');
 const TOKEN_FILE = path.join(__dirname, 'token.txt');
@@ -17,6 +26,7 @@ const DOH_CONFIG_FILE = path.join(__dirname, 'doh.json');
 const FINGERPRINTS_FILE = path.join(__dirname, 'fingerprints.json');
 const INTELLIGENCE_FILE = path.join(__dirname, 'crawler-intelligence.json');
 
+app.disable('x-powered-by');
 app.use(express.raw({ type: '*/*', limit: '10mb' }));
 
 // State
@@ -196,14 +206,26 @@ async function resolveViaDoh(hostname) {
 
         const dohUrl = `${provider}?name=${encodeURIComponent(hostname)}&type=A`;
         const response = await new Promise((resolve, reject) => {
-            https.get(dohUrl, { timeout: dohConfig.timeout }, (res) => {
+            const request = https.get(dohUrl, {
+                timeout: Math.min(Number(dohConfig.timeout) || 5000, 10000),
+                headers: { Accept: 'application/dns-json' }
+            }, (res) => {
                 let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => resolve(JSON.parse(data)));
-            }).on('error', reject);
+                res.on('data', chunk => {
+                    data += chunk;
+                    if (data.length > 1024 * 1024) request.destroy(new Error('DoH response too large'));
+                });
+                res.on('end', () => {
+                    if (res.statusCode !== 200) return reject(new Error(`DoH HTTP ${res.statusCode}`));
+                    try { resolve(JSON.parse(data)); } catch (err) { reject(err); }
+                });
+            });
+            request.on('timeout', () => request.destroy(new Error('DoH request timed out')));
+            request.on('error', reject);
         });
 
-        const ips = response.Answer?.map(a => a.data) || [];
+        const ips = (response.Answer || []).filter(a => a.type === 1 || a.type === 28).map(a => a.data).filter(ip => net.isIP(ip));
+        if (ips.some(isBlockedHost)) throw new Error('DoH resolved target to a blocked/private address');
         if (ips.length > 0 && dohConfig.cache) {
             dnsCache.set(cacheKey, {
                 ips,
@@ -320,6 +342,10 @@ function analyzeResponse(statusCode, contentType, contentLength) {
 }
 
 // ---- SSRF Guard ----
+function isLoopbackBind(host) {
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
 function isBlockedHost(hostname) {
     const host = hostname.toLowerCase();
     if (host.endsWith('.onion')) return false;
@@ -333,7 +359,11 @@ function isBlockedHost(hostname) {
         if (p[0] === 169 && p[1] === 254) return true;
     }
     if (net.isIP(host) === 6) {
-        if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) return true;
+        const normalized = host.replace(/^\[|\]$/g, '').toLowerCase();
+        if (normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') ||
+            normalized.startsWith('fe80') || normalized.startsWith('::ffff:127.') ||
+            normalized.startsWith('::ffff:10.') || normalized.startsWith('::ffff:192.168.') ||
+            normalized.startsWith('::ffff:169.254.')) return true;
     }
     return false;
 }
@@ -342,6 +372,29 @@ function safeEqual(a, b) {
     const ab = Buffer.from(String(a)), bb = Buffer.from(String(b));
     if (ab.length !== bb.length) return false;
     return crypto.timingSafeEqual(ab, bb);
+}
+
+// ---- Network Safety ----
+async function validateTargetNetwork(hostname) {
+    if (isBlockedHost(hostname)) throw new Error('Target host is blocked by SSRF guard.');
+    if (net.isIP(hostname)) return;
+
+    if (dohConfig.enabled) {
+        const ips = await resolveViaDoh(hostname);
+        if (!ips || ips.length === 0) throw new Error('Target DNS resolution failed.');
+        if (ips.some(isBlockedHost)) throw new Error('Target resolves to a blocked/private address.');
+        return;
+    }
+
+    const records = await dns.lookup(hostname, { all: true, verbatim: true });
+    if (!records.length || records.some(record => isBlockedHost(record.address))) {
+        throw new Error('Target resolves to a blocked/private address.');
+    }
+}
+
+function corsOriginAllowed(origin) {
+    if (!origin) return true;
+    return CORS_ALLOW_ORIGINS.has(origin);
 }
 
 // ---- Cuimp Wrapper ----
@@ -469,12 +522,19 @@ fs.watchFile(INTELLIGENCE_FILE, () => {
 app.use(async (req, res) => {
     const target = resolveTarget(req);
 
-    const origin = req.headers.origin || '*';
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
+    const origin = req.headers.origin;
+    if (!corsOriginAllowed(origin)) return res.status(403).send('Origin not allowed.');
+    if (origin) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, X-Proxy-Token');
-    if (origin !== '*') res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Proxy-Token');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
 
     if (!target) {
@@ -503,76 +563,98 @@ app.use(async (req, res) => {
         return res.status(401).send('Unauthorized: invalid proxy token.');
     }
 
-    // SSRF check
-    if (isBlockedHost(parsed.hostname)) {
-        return res.status(403).send('Target host is blocked by SSRF guard.');
-    }
+    try { await validateTargetNetwork(parsed.hostname); }
+    catch (error) { return res.status(403).send(error.message); }
 
-    // DoH resolution (optional logging)
-    if (dohConfig.enabled && dohConfig.cache) {
-        const resolvedIps = await resolveViaDoh(parsed.hostname);
-    }
-
-    const targetUrl = parsed.toString();
-    const fingerprint = crawlerIntelligence.enabled && crawlerIntelligence.strategies?.dynamic_ua_rotation?.enabled
-        ? getNextFingerprint()
-        : { browser: 'chrome', version: 'latest' };
-
-    const hasBody = Buffer.isBuffer(req.body) && req.body.length > 0;
-    const baseOptions = {
-        fingerprint,
-        headers: {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {})
-        },
-        timeout: 15000,
-        ...(hasBody ? { data: req.body } : {})
-    };
-
-    const attempts = proxyPool.length > 0 ? Math.min(proxyPool.length, 3) : 1;
+    let targetUrl = parsed.toString();
     let lastError;
+    let response;
 
-    for (let i = 0; i < attempts; i++) {
-        const proxyEntry = getNextProxy();
-        const fetchOptions = { ...baseOptions };
-
+    for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect++) {
+        let currentUrl;
         try {
-            if (proxyEntry) {
-                const resolvedProxy = resolveProxyForUrl(proxyEntry, targetUrl);
-                fetchOptions.proxy = resolvedProxy;
-                console.log(`[FETCH] ${maskProxy(proxyEntry)} -> ${req.method} ${parsed.hostname}`);
-            } else {
-                console.log(`[FETCH] direct -> ${req.method} ${parsed.hostname}`);
-            }
-
-            const r = await fetchViaCuimp(req.method, targetUrl, fetchOptions);
-            const analysis = analyzeResponse(r.status || 200, r.headers?.['content-type'], r.data?.length || 0);
-
-            const ct = r.headers && r.headers['content-type'];
-            if (ct) res.setHeader('Content-Type', ct);
-            return res.status(r.status || 200).send(r.data);
+            currentUrl = new URL(targetUrl);
+            if (!['http:', 'https:'].includes(currentUrl.protocol)) throw new Error('Only HTTP and HTTPS targets are allowed.');
+            await validateTargetNetwork(currentUrl.hostname);
         } catch (error) {
-            lastError = error;
-            console.error(`[PROXY ERROR] attempt ${i + 1}/${attempts}: ${error.message}`);
-            if (error.response) {
-                const ct = error.response.headers && error.response.headers['content-type'];
-                if (ct) res.setHeader('Content-Type', ct);
-                return res.status(error.response.status).send(error.response.data);
+            return res.status(403).send(error.message);
+        }
+
+        const fingerprint = crawlerIntelligence.enabled && crawlerIntelligence.strategies?.dynamic_ua_rotation?.enabled
+            ? getNextFingerprint() : { browser: 'chrome', version: 'latest' };
+        const hasBody = Buffer.isBuffer(req.body) && req.body.length > 0;
+        const baseOptions = {
+            fingerprint,
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {})
+            },
+            timeout: REQUEST_TIMEOUT_MS, maxRedirects: 0,
+            ...(hasBody ? { data: req.body } : {})
+        };
+
+        const attempts = proxyPool.length > 0 ? Math.min(proxyPool.length, 3) : 1;
+        let attemptError;
+        for (let i = 0; i < attempts; i++) {
+            const proxyEntry = getNextProxy();
+            const fetchOptions = { ...baseOptions };
+            try {
+                if (proxyEntry) {
+                    fetchOptions.proxy = resolveProxyForUrl(proxyEntry, targetUrl);
+                    console.log(`[FETCH] ${maskProxy(proxyEntry)} -> ${req.method} ${currentUrl.hostname}`);
+                } else {
+                    console.log(`[FETCH] direct -> ${req.method} ${currentUrl.hostname}`);
+                }
+                response = await fetchViaCuimp(req.method, targetUrl, fetchOptions);
+                attemptError = null;
+                break;
+            } catch (error) {
+                attemptError = error;
+                console.error(`[PROXY ERROR] attempt ${i + 1}/${attempts}: ${error.message}`);
+                if (error.response) { response = error.response; attemptError = null; break; }
             }
         }
+
+        if (attemptError) { lastError = attemptError; break; }
+
+        const status = response.status || 200;
+        const location = response.headers?.location || response.headers?.Location;
+        if (status >= 300 && status < 400 && location) {
+            if (redirect === MAX_REDIRECTS) return res.status(508).send('Redirect limit exceeded.');
+            try {
+                const nextUrl = new URL(location, targetUrl);
+                if (!['http:', 'https:'].includes(nextUrl.protocol)) return res.status(403).send('Redirect target protocol is not allowed.');
+                await validateTargetNetwork(nextUrl.hostname);
+                targetUrl = nextUrl.toString();
+                continue;
+            } catch (error) {
+                return res.status(403).send(`Redirect blocked: ${error.message}`);
+            }
+        }
+
+        const body = response.data;
+        const size = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(String(body ?? ''));
+        if (size > MAX_RESPONSE_BYTES) return res.status(413).send('Upstream response exceeds configured size limit.');
+        analyzeResponse(status, response.headers?.['content-type'] || response.headers?.['Content-Type'], size);
+        const ct = response.headers?.['content-type'] || response.headers?.['Content-Type'];
+        if (ct) res.setHeader('Content-Type', ct);
+        return res.status(status).send(body);
     }
 
     res.status(502).send(`Routing failed: ${lastError ? lastError.message : 'all proxies failed'}`);
 });
 
-const server = app.listen(PORT, () => {
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be an integer between 1 and 65535.');
+if (!isLoopbackBind(HOST) && !PROXY_TOKEN) throw new Error('Refusing non-loopback bind without PROXY_TOKEN. Set HOST=127.0.0.1 for local-only mode.');
+
+const server = app.listen(PORT, HOST, () => {
     console.log(`\n============================================================`);
     console.log(`[LIVE] Rook Crawler + Stealth Proxy (Advanced)`);
-    console.log(`[OPEN] http://localhost:${PORT}/`);
-    console.log(`[AUTH] ${PROXY_TOKEN ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`[OPEN] http://${HOST === '::' ? '[::1]' : HOST}:${PORT}/`);
+    console.log(`[AUTH] ${PROXY_TOKEN ? 'ENABLED' : 'LOCAL-ONLY'}`);
     console.log(`[PROXY] ${proxyPool.length} proxies loaded`);
     console.log(`[TOR] ${torConfig.enabled ? 'ENABLED' : 'disabled'}`);
     console.log(`[DOH] ${dohConfig.enabled ? `ENABLED (${dohConfig.provider})` : 'disabled'}`);
@@ -590,10 +672,14 @@ server.on('error', (err) => {
     process.exit(1);
 });
 
-process.on('SIGTERM', () => {
-    console.log('[SYSTEM] Shutting down gracefully...');
+function shutdown(signal) {
+    console.log(`[SYSTEM] ${signal} received; shutting down gracefully...`);
     server.close(() => {
         console.log('[SYSTEM] Server closed');
         process.exit(0);
     });
-});
+    setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
