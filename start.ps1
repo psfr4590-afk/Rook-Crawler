@@ -1,1 +1,28 @@
-#!/usr/bin/env pwsh\n# Rook Crawler Launcher for Windows PowerShell 7+\n# Usage: .\\start.ps1\n\n$ErrorActionPreference = \"Stop\"\n\nWrite-Host \"============================================================\" -ForegroundColor Cyan\nWrite-Host \"Rook Crawler + Stealth Proxy\" -ForegroundColor Cyan\nWrite-Host \"============================================================\" -ForegroundColor Cyan\nWrite-Host \"\"\n\n# Check Node.js installation\nif (-not (Get-Command node -ErrorAction SilentlyContinue)) {\n    Write-Host \"[ERROR] Node.js is not installed or not in PATH\" -ForegroundColor Red\n    Write-Host \"Download from: https://nodejs.org/\" -ForegroundColor Yellow\n    exit 1\n}\n\n$nodeVersion = (node --version)\nWrite-Host \"[CHECK] Node.js version: $nodeVersion\" -ForegroundColor Green\n\n# Check npm\nif (-not (Get-Command npm -ErrorAction SilentlyContinue)) {\n    Write-Host \"[ERROR] npm is not installed\" -ForegroundColor Red\n    exit 1\n}\n\n$npmVersion = (npm --version)\nWrite-Host \"[CHECK] npm version: $npmVersion\" -ForegroundColor Green\n\n# Install dependencies if needed\nif (-not (Test-Path \"node_modules\")) {\n    Write-Host \"[SETUP] Installing dependencies...\" -ForegroundColor Yellow\n    npm install\n    if ($LASTEXITCODE -ne 0) {\n        Write-Host \"[ERROR] npm install failed\" -ForegroundColor Red\n        exit 1\n    }\n    Write-Host \"[SUCCESS] Dependencies installed\" -ForegroundColor Green\n}\n\nWrite-Host \"\"\nWrite-Host \"[LAUNCH] Starting Rook Crawler...\" -ForegroundColor Cyan\nWrite-Host \"[OPEN] http://localhost:8010 in your browser\" -ForegroundColor Cyan\nWrite-Host \"\"\n\n# Start server\nnpm start\n
+#!/usr/bin/env pwsh
+# Rook Crawler launcher for Windows PowerShell 7+
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $PSScriptRoot
+
+Write-Host "Rook Crawler 2.1.0 RC" -ForegroundColor Cyan
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) { throw "Node.js 18.17+ is required and was not found in PATH." }
+$nodeVersion = [version](node -p "process.versions.node")
+if ($nodeVersion -lt [version]"18.17.0") { throw "Node.js 18.17+ is required. Found $nodeVersion." }
+
+$npm = Get-Command npm -ErrorAction SilentlyContinue
+if (-not $npm) { throw "npm was not found in PATH." }
+
+if (-not (Test-Path -LiteralPath "package-lock.json")) {
+    throw "package-lock.json is required for a deterministic install."
+}
+if (-not (Test-Path -LiteralPath "node_modules")) {
+    Write-Host "[SETUP] Installing locked dependencies..." -ForegroundColor Yellow
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
+}
+
+$port = if ($env:PORT) { $env:PORT } else { "8010" }
+Write-Host "[LAUNCH] http://127.0.0.1:$port" -ForegroundColor Cyan
+& npm start
+exit $LASTEXITCODE
