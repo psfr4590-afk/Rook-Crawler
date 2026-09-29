@@ -7,8 +7,7 @@ if ! command -v node >/dev/null 2>&1; then
     exit 1
 fi
 
-node_major="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$node_major" -lt 18 ]; then
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 18 || (major === 18 && minor >= 17) ? 0 : 1)' >/dev/null 2>&1; then
     echo "[ERROR] Node.js 18.17+ is required. Found: $(node --version)"
     exit 1
 fi
