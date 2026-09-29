@@ -1,57 +1,129 @@
-# Rook Crawler + Stealth Proxy (Advanced Edition)
+# Rook Crawler
 
-A production-grade local web crawler with a dark-themed browser UI, backed by a Node CORS proxy with **Tor Browser integration**, **DNS over HTTPS (DoH)**, **multi-device fingerprint rotation**, and an **AI-driven crawler intelligence layer**. Bypass anti-bot measures with Chrome TLS fingerprinting, rotating proxies, and adaptive delay strategies.
+Rook Crawler is a local web crawler with a browser UI and a Node.js proxy layer. The crawler orchestration and extraction logic run in the browser UI (index.html); the local server (server.js) provides controlled outbound HTTP access through cuimp, optional proxy rotation, optional Tor routing, DNS validation, authentication, and response analysis.
 
-**Supported Platforms:** Windows (PowerShell 7.6.5+), macOS, Linux, Termux/Android
+**Release target:** 2.1.0 RC  
+**Current state:** hardening branch, not yet a production release  
+**Platforms:** Windows, macOS, Linux, Termux/Android-compatible Node environments, subject to cuimp platform support
 
-## 🚀 Quick Start
+## Quick start
 
-### Windows (PowerShell 7+)
+### Windows PowerShell 7+
 
 ```powershell
-# Clone or download
 git clone https://github.com/psfr4590-afk/Rook-Crawler.git
 cd Rook-Crawler
-
-# Install dependencies
-npm install
-
-# Start server
-npm start
-
-# Open browser
-Start-Process http://localhost:8010
+.\start.ps1
 ```
 
-### macOS / Linux
+The launcher uses `npm ci` against the committed lockfile and starts the server on `127.0.0.1:8010` by default.
+
+### Linux / macOS / Termux
 
 ```bash
 git clone https://github.com/psfr4590-afk/Rook-Crawler.git
 cd Rook-Crawler
-npm install
+npm ci
 npm start
-# Open http://localhost:8010 in browser
 ```
 
-### Termux / Android
+On Termux:
 
 ```bash
-pkg update && pkg install nodejs
-cd ~/Rook-Crawler
 chmod +x start.sh
 ./start.sh
-# Open http://localhost:8010 in browser
 ```
 
----
+Open `http://127.0.0.1:8010`.
 
-## ✨ Advanced Features
+Node.js **18.17+** is required.
 
-### 🧅 Tor Browser Integration
+## What is implemented
 
-Enable `.onion` domain crawling with circuit isolation:
+### Browser crawler
 
-**tor.json:**
+The UI provides:
+
+- multiple seed targets
+- configurable maximum depth and page count
+- configurable concurrency and delay
+- same-domain crawling by default
+- optional subdomain and external-link crawling
+- robots.txt handling
+- sitemap seeding
+- URL normalization and filtering
+- duplicate-content detection
+- content extraction and keyword matching
+- crawl cancellation
+- denial tracking with explicit reasons
+- JSON and CSV result export
+- proxy configuration and proxy-token configuration
+
+The crawler is intentionally kept in the existing browser-first architecture. The hardening work does not replace it with a second crawler engine.
+
+### Local proxy layer
+
+`server.js` provides:
+
+- HTTP/HTTPS target validation
+- rotating HTTP/HTTPS/SOCKS proxy selection
+- optional Tor routing for `.onion` targets
+- optional DoH-backed DNS validation
+- browser fingerprint selection through cuimp
+- response analysis and error memory
+- bounded request bodies and response bodies
+- validated redirects with a configurable redirect limit
+- request timeout
+- graceful shutdown
+- localhost-only binding by default
+- token protection when exposed beyond loopback
+- restricted CORS
+- security response headers
+
+## Security defaults
+
+The server now binds to `127.0.0.1` by default.
+
+A non-loopback bind is refused unless `PROXY_TOKEN` is configured. To deliberately expose the proxy on another interface:
+
+```powershell
+$env:HOST="0.0.0.0"
+$env:PROXY_TOKEN="replace-with-a-long-random-secret"
+npm start
+```
+
+Additional environment controls:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `HOST` | `127.0.0.1` | Listen address |
+| `PORT` | `8010` | Listen port |
+| `PROXY_TOKEN` | unset | Authentication token |
+| `CORS_ALLOW_ORIGINS` | localhost origins | Comma-separated allowed browser origins |
+| `REQUEST_TIMEOUT_MS` | `15000` | Upstream request timeout |
+| `MAX_RESPONSE_BYTES` | `10485760` | Maximum buffered upstream response |
+| `MAX_REDIRECTS` | `5` | Maximum validated redirects |
+
+Do not commit `token.txt`, proxy lists containing credentials, `.env` files, or other secrets.
+
+## SSRF and DNS protections
+
+The proxy rejects localhost names, loopback addresses, RFC1918 private IPv4 ranges, link-local IPv4 addresses, unspecified IPv4 addresses, common private/link-local IPv6 ranges, IPv4-mapped private IPv6 addresses, and `.internal` hostnames.
+
+Hostname targets are validated against DNS before the upstream request. When DoH is enabled, the configured DoH provider is used for this validation. A target that resolves to a blocked/private address is rejected.
+
+Redirects are not blindly followed. Each redirect is parsed, restricted to HTTP/HTTPS, DNS-validated, and subject to `MAX_REDIRECTS`.
+
+`.onion` targets are only permitted when Tor is explicitly enabled.
+
+This protects the local proxy boundary. It is not a guarantee that a third-party proxy is trustworthy or that a remote proxy will perform identical DNS validation.
+
+## Tor
+
+Tor is disabled by default.
+
+Example `tor.json`:
+
 ```json
 {
   "enabled": true,
@@ -64,441 +136,65 @@ Enable `.onion` domain crawling with circuit isolation:
 }
 ```
 
-**Then add to proxies.txt:**
-```
-tor://
-```
+Add `tor://` to `proxies.txt` when Tor routing is enabled.
 
-Supported modes:
-- `local`: Use local Tor daemon (requires `tor` running separately)
-- `remote`: Use Tor Browser (requires Tor Browser installed)
+A local Tor daemon must already be available. Rook Crawler does not silently install or launch a Tor daemon.
 
-### 🌐 DNS over HTTPS (DoH)
+## DoH
 
-Prevent DNS leaks with multiple DoH providers:
+DoH configuration lives in `doh.json`. It is used for DNS validation and caching, not as a claim that every DNS operation performed by a third-party proxy is under Rook Crawler's control.
 
-**doh.json:**
-```json
-{
-  "enabled": true,
-  "provider": "cloudflare",
-  "cache": true,
-  "cacheTTL": 3600
-}
-```
+Supported configured providers include Cloudflare, Google, Quad9, and NextDNS.
 
-Supported providers:
-- `cloudflare` (1.1.1.1)
-- `google` (dns.google)
-- `quad9` (dns.quad9.net)
-- `nextdns` (dns.nextdns.io)
+## Browser fingerprints
 
-### 👤 8+ Browser Fingerprints
+`fingerprints.json` contains browser descriptors used by cuimp for HTTP/TLS impersonation. Fingerprint rotation is controlled by `crawler-intelligence.json`.
 
-Rotate through multiple device profiles to avoid detection:
+This is browser impersonation, not a promise of anonymity or undetectability.
 
-**fingerprints.json includes:**
-- Chrome (Windows, Linux, macOS) – Latest + v120
-- Firefox (Windows, Linux) – Latest + v120
-- Edge (Windows) – Latest
-- Safari (macOS) – Latest
+## Crawler intelligence
 
-Enable automatic rotation in `crawler-intelligence.json`:
-```json
-{
-  "strategies": {
-    "dynamic_ua_rotation": {
-      "enabled": true,
-      "interval": 10
-    }
-  }
-}
-```
+`crawler-intelligence.json` contains the existing adaptive strategy configuration, including adaptive delay, content prioritization, anti-bot response signatures, cookie persistence configuration, link-quality scoring configuration, optional JavaScript-rendering configuration, dynamic fingerprint rotation, response analysis, and in-memory error learning.
 
-### 🧠 Crawler Intelligence Layer
+Some configuration entries describe capabilities that are intentionally disabled until their required runtime component exists. They are not represented as completed subsystems merely because a JSON option exists.
 
-Adaptive crawling with anti-bot evasion:
+## Configuration files
 
-**crawler-intelligence.json strategies:**
+| File | Purpose |
+|---|---|
+| `server.js` | Local proxy server and network boundary |
+| `index.html` | Browser crawler UI and crawl engine |
+| `proxies.txt` | Optional proxy pool |
+| `token.txt` | Optional authentication secret |
+| `tor.json` | Tor configuration |
+| `doh.json` | DoH configuration |
+| `fingerprints.json` | Browser fingerprint descriptors |
+| `crawler-intelligence.json` | Adaptive crawler configuration |
+| `start.sh` | Linux/macOS/Termux launcher |
+| `start.ps1` | Windows PowerShell launcher |
 
-| Strategy | Purpose |
-|----------|---------|
-| `adaptive_delay` | Auto-backoff on 429/503 responses |
-| `anti_bot_detection` | Detect & respond to captcha/challenges |
-| `cookie_persistence` | Maintain sessions across requests |
-| `dynamic_ua_rotation` | Rotate fingerprints every N requests |
-| `link_quality_scoring` | Prioritize high-value URLs |
-| `content_prioritization` | Extract main content first |
-| `javascript_rendering` | Optional JS rendering (headless) |
+## Testing
 
-**Response handling:**
-- `429` (Rate Limit) → Increase delay, switch proxy
-- `403` (Forbidden) → Try different fingerprint/proxy
-- `503` (Unavailable) → Exponential backoff
-- `999` (LinkedIn) → Use residential proxy
+The repository has a real Node.js test contract:
 
----
-
-## 📁 Files & Configuration
-
-```
-server.js                    -- Main proxy server (all features)
-index.html                   -- Dark-themed crawler UI
-proxies.txt                  -- Rotating proxy list (hot-reloaded)
-token.txt                    -- Auth token (hot-reloaded)
-tor.json                     -- Tor Browser config
-doh.json                     -- DNS over HTTPS config
-fingerprints.json            -- Browser profiles (8+)
-crawler-intelligence.json    -- AI strategies & response analysis
-package.json                 -- Dependencies
-start.sh                     -- Linux/macOS/Termux launcher
-start.ps1                    -- Windows PowerShell launcher
-.gitignore                   -- Ignore node_modules, secrets
-README.md                    -- This file
-```
-
----
-
-## 🔧 Configuration
-
-### Proxies (proxies.txt)
-
-```
-# HTTP/HTTPS proxies
-http://user:pass@proxy-host:8000
-https://user:pass@proxy-host:8000
-
-# SOCKS5 proxy
-socks5://127.0.0.1:1080
-
-# Tor (requires tor.json enabled: true)
-tor://
-
-# Comments
-# This is a comment
-```
-
-### Authentication (token.txt)
-
-```
-your-secret-token-123
-```
-
-Or set environment variable:
-```powershell
-# PowerShell
-$env:PROXY_TOKEN="your-secret-token-123"
-npm start
-
-# CMD
-set PROXY_TOKEN=your-secret-token-123
-npm start
-
-# Bash
-export PROXY_TOKEN="your-secret-token-123"
-npm start
-```
-
-### Custom Port
-
-```powershell
-$env:PORT=8011
-npm start
-
-# Or
-npm start -- --port 8011
-```
-
----
-
-## 🕷️ Crawl Settings (UI)
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| **Max Depth** | 3 | Link hops from seed URL |
-| **Max Pages** | 50 | Total pages to fetch |
-| **Concurrency** | 3 | Parallel workers |
-| **Delay (ms)** | 500 | Time between requests (adaptive with intelligence) |
-| **Allow External** | ✗ | Crawl outside main domain |
-| **Allow Subdomains** | ✓ | Include subdomains |
-| **Allow Backward** | ✗ | Crawl paths above seed |
-| **Obey Robots.txt** | ✓ | Respect robots.txt rules |
-| **Only Main Content** | ✓ | Filter ads/nav/sidebar |
-
----
-
-## 🔒 Security & Privacy
-
-| Feature | Benefit |
-|---------|---------|
-| **SSRF Guard** | Blocks internal IPs (127.0.0.1, 192.168.x, etc.) but allows `.onion` |
-| **Tor Integration** | Circuit isolation, IP rotation, `.onion` access |
-| **DoH** | DNS queries encrypted, prevents ISP monitoring |
-| **Fingerprinting** | TLS + HTTP mimicry (Chrome/Firefox/Edge/Safari) |
-| **Token Auth** | Proxy access control (recommended for LANs) |
-| **Hot-Reload** | Update configs without server restart |
-
----
-
-## 🏗️ Architecture
-
-```
-Browser (index.html)
-    ↓
-Express Server (server.js)
-    ├─→ CORS Headers
-    ├─→ Token Validation
-    ├─→ Target URL Validation
-    ├─→ SSRF Guard (.onion allowed)
-    ├─→ DoH Resolution + Cache
-    ├─→ Fingerprint Selection
-    ├─→ Proxy Pool Rotation
-    ├─→ Tor Integration (if enabled)
-    ├─→ Crawler Intelligence
-    │   ├─→ Response Analysis
-    │   ├─→ Adaptive Delay
-    │   ├─→ Anti-Bot Detection
-    │   └─→ Error Memory/Blacklist
-    └─→ cuimp (Chrome TLS + HTTP Fingerprint)
-        └─→ Target Website
-```
-
----
-
-## 🚨 Troubleshooting
-
-### Windows PowerShell Issues
-
-**Error: "cannot be loaded because running scripts is disabled"**
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-**Port already in use**
-```powershell
-# Find process using port 8010
-netstat -ano | findstr :8010
-
-# Kill process (replace PID)
-taskkill /PID <PID> /F
-
-# Or use different port
-$env:PORT=8011; npm start
-```
-
-**Module not found: 'express'**
-```powershell
-Remove-Item -Recurse -Force node_modules
-Remove-Item package-lock.json
-npm install
-npm start
-```
-
-### Tor Issues
-
-**Tor not connecting**
 ```bash
-# Verify Tor daemon running
-telnet 127.0.0.1 9050
-
-# Or start Tor manually
-tor --SocksPort 9050 --ControlPort 9051
+npm ci
+npm test
+npm run lint
 ```
 
-**Error: "Tor is not enabled"**
-- Edit `tor.json` and set `"enabled": true`
-- Make sure `tor://` is in `proxies.txt`
+The test suite currently verifies server syntax, release dependency/lockfile identity, and launcher presence. CI runs the release contract across supported Node.js versions on Linux and Windows and performs a production-dependency audit.
 
-### DoH Issues
+The RC is not considered production-ready until the complete CI/security/deployment verification gate is green.
 
-**DNS resolution failed**
-- Check internet connectivity
-- Try alternative provider: `"provider": "google"` or `"provider": "quad9"`
-- Verify URL is correct in `doh.json`
+## Dependency contract
 
-### High Rate Limits
+The release branch pins Express 4.22.3 and cuimp 2.1.1. The lockfile is committed and launchers use `npm ci` rather than an unconstrained `npm install`.
 
-**Getting 429 responses frequently**
-1. Increase `crawl settings → Delay (ms)`
-2. Enable `adaptive_delay` in `crawler-intelligence.json`
-3. Add more proxies to `proxies.txt`
-4. Use **residential proxies** (not datacenter)
-5. Reduce `Concurrency` to 1–2
+## Legal and operational use
 
-### Fingerprint Detection
+Only crawl systems you are authorized to access. Respect robots.txt, rate limits, access controls, Terms of Service, and applicable law. Proxy rotation, Tor, and browser impersonation do not change those obligations.
 
-**Still getting blocked despite rotating profiles**
-1. Add more profiles to `fingerprints.json`
-2. Use residential proxies (datacenter IPs are flagged)
-3. Increase delay between requests
-4. Enable `cookie_persistence` for session handling
-
----
-
-## 📊 Performance Tips
-
-| Tip | Benefit |
-|-----|---------|
-| Use **residential proxies** | Harder to detect than datacenter IPs |
-| Enable **DoH caching** | Reduces DNS latency |
-| Set **concurrency = 1–3** | Avoid rate limits & bans |
-| Use **Tor for .onion only** | Tor is slow; use standard proxies for clearnet |
-| Enable **cookie persistence** | Required for sites with sessions |
-| Adjust **adaptive delay thresholds** | Auto-tune delays based on responses |
-
----
-
-## 🔌 Proxy Examples
-
-### Free Proxies (unreliable, slow)
-```
-http://10.10.1.10:3128
-http://proxy.example.com:8080
-socks5://proxy.example.com:1080
-```
-
-### Residential Proxies (recommended, paid)
-```
-http://residential-proxy-api.com:port
-socks5://user:pass@residential-proxy.com:1080
-```
-
-### Datacenter Proxies (fast, easier to detect)
-```
-http://datacenter-proxy.com:8080
-socks5://dc-proxy.example.com:1080
-```
-
-### Tor Network
-```
-tor://
-```
-
----
-
-## 🛠️ Advanced Usage
-
-### Export Results
-
-**JSON Format**
-```javascript
-// Results auto-saved in memory
-// UI provides "Export JSON" button
-// Each result includes: url, title, description, matched_keywords, content
-```
-
-**CSV Format**
-```
-URL,Title,Description,Keywords
-https://example.com,Page Title,Description,"keyword1,keyword2"
-```
-
-### Custom Crawl Rules
-
-Edit `crawler-intelligence.json`:
-```json
-{
-  "response_analysis": {
-    "content_signals": {
-      "min_content_length": 500,
-      "redirect_chains": 5
-    }
-  }
-}
-```
-
-### Learn from Errors
-
-Enable memory system:
-```json
-{
-  "memory": {
-    "learnFromErrors": true,
-    "blacklistDurations": {
-      "rate_limit": 1800000,
-      "temporary": 300000
-    }
-  }
-}
-```
-
----
-
-## 📦 Dependencies
-
-```json
-{
-  "express": "^4.19.2",
-  "cuimp": "*"
-}
-```
-
-**cuimp**: Chrome fingerprint HTTP client for TLS mimicry + SOCKS5 support.
-
-Install manually:
-```bash
-npm install express cuimp
-```
-
----
-
-## 🧪 Testing
-
-### Local Test
-
-```powershell
-# Start server
-npm start
-
-# In another terminal, test proxy
-curl -x http://localhost:8010 https://httpbin.org/headers
-
-# Or use browser
-# http://localhost:8010/?url=https://example.com
-```
-
-### With Authentication
-
-```powershell
-# Edit token.txt
-echo "my-secret-token" > token.txt
-
-# Test with token
-curl -H "X-Proxy-Token: my-secret-token" `
-  -x http://localhost:8010 `
-  https://httpbin.org/headers
-```
-
----
-
-## 📜 License
+## License
 
 MIT
-
----
-
-## 🤝 Contributing
-
-Issues and PRs welcome. Please test on Windows PowerShell, macOS, and Linux.
-
----
-
-## ⚠️ Legal Notice
-
-This tool is for **educational and authorized testing only**. Ensure you have permission to crawl target websites. Respect `robots.txt`, rate limits, and Terms of Service. Misuse may violate laws (CFAA, GDPR, etc.).
-
----
-
-## 🎯 Roadmap
-
-- [ ] Persistent result database (SQLite)
-- [ ] Headless browser rendering (Puppeteer)
-- [ ] Machine learning for link prioritization
-- [ ] REST API for remote crawling
-- [ ] Multi-instance coordination
-- [ ] Real-time WebSocket updates
-- [ ] Export to CSV/JSON/XML
-
----
-
-**Status:** Production-ready | **Last Updated:** 2026-08-31 | **Node:** 18+ | **Platforms:** Windows, macOS, Linux, Termux
