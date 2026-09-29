@@ -5,3 +5,7 @@ token.txt
 benchmark/*.jsonl
 proxies*.txt
 proxy_test_results.txt
+.env
+.env.*
+!.env.example
+coverage/
