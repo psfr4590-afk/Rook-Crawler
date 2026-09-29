@@ -1,1 +1,37 @@
-{\n  \"name\": \"rook-crawler\",\n  \"version\": \"2.0.0\",\n  \"description\": \"Rook Crawler + Stealth Proxy: Web crawler with Tor Browser, DoH/HTTPS, fingerprint rotation, AI intelligence. Works on Windows (PowerShell), macOS, Linux, Termux.\",\n  \"main\": \"server.js\",\n  \"scripts\": {\n    \"start\": \"node server.js\",\n    \"dev\": \"node --watch server.js\",\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [\n    \"crawler\",\n    \"web-scraper\",\n    \"proxy\",\n    \"tor\",\n    \"doh\",\n    \"fingerprinting\",\n    \"anti-bot\",\n    \"stealth\",\n    \"cuimp\",\n    \"socks5\"\n  ],\n  \"author\": \"John Petty\",\n  \"license\": \"MIT\",\n  \"repository\": {\n    \"type\": \"git\",\n    \"url\": \"https://github.com/psfr4590-afk/Rook-Crawler.git\"\n  },\n  \"engines\": {\n    \"node\": \">=18.0.0\",\n    \"npm\": \">=9.0.0\"\n  },\n  \"dependencies\": {\n    \"express\": \"^4.19.2\",\n    \"cuimp\": \"*\"\n  },\n  \"optionalDependencies\": {\n    \"tor\": \"*\"\n  },\n  \"devDependencies\": {},\n  \"os\": [\n    \"win32\",\n    \"darwin\",\n    \"linux\"\n  ],\n  \"preferGlobal\": false,\n  \"bin\": {},\n  \"_comment\": \"Supports Windows PowerShell 7.6.5+, macOS, Linux, Termux/Android. Uses cuimp for Chrome fingerprinting + TLS mimicry.\"\n}\n
+{
+  "name": "rook-crawler",
+  "version": "2.1.0",
+  "description": "Local web crawler with a hardened Node proxy, optional Tor routing, DoH validation, browser fingerprinting, and adaptive crawl intelligence.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "lint": "node --check server.js && node --check tests/security.test.js"
+  },
+  "keywords": [
+    "crawler",
+    "web-scraper",
+    "proxy",
+    "tor",
+    "doh",
+    "fingerprinting",
+    "cuimp",
+    "socks5"
+  ],
+  "author": "John Petty",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/psfr4590-afk/Rook-Crawler.git"
+  },
+  "engines": {
+    "node": ">=18.17.0",
+    "npm": ">=9.0.0"
+  },
+  "dependencies": {
+    "express": "4.22.3",
+    "cuimp": "2.1.1"
+  },
+  "preferGlobal": false
+}
